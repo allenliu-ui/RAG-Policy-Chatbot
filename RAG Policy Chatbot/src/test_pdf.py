@@ -8,7 +8,7 @@ Drop any PDF into the data/ folder first and update PDF_PATH below.
 
 import fitz  # PyMuPDF
 
-PDF_PATH = "data/f1040s1.pdf"  # Update this to your PDF filename
+PDF_PATH = "data/sample.pdf"  # Update this to your PDF filename
 
 def extract_text(pdf_path: str) -> str:
     doc = fitz.open(pdf_path)
