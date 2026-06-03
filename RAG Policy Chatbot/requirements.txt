@@ -1,5 +1,0 @@
-openai
-qdrant-client
-pymupdf
-python-dotenv
-tiktoken
