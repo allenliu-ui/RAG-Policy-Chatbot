@@ -1,10 +1,19 @@
 """
-api.py — FastAPI wrapper for the RAG pipeline
+api.py — FastAPI wrapper for the RAG pipeline (Week 4: multi-tenant auth)
 
 Endpoints:
-    POST /ingest   — Upload a PDF and store its embeddings in Qdrant
-    POST /query    — Ask a question against a collection, get a cited answer
-    GET  /health   — Check that the API and Qdrant are reachable
+    GET  /health              — Check API and Qdrant connectivity (public)
+
+    POST /ingest              — Upload a PDF; collection derived from API key
+    POST /query               — Ask a question; collection derived from API key
+
+    POST /admin/keys          — Create a new tenant API key  [X-Admin-Key]
+    GET  /admin/keys          — List all keys (redacted)     [X-Admin-Key]
+    POST /admin/keys/revoke   — Revoke a key                 [X-Admin-Key]
+
+Auth model:
+    Tenant endpoints use the header:  X-API-Key: rag_<hex>
+    Admin endpoints use the header:   X-Admin-Key: <ADMIN_SECRET from .env>
 
 Usage:
     uvicorn src.api:app --reload
@@ -14,8 +23,9 @@ import os
 import shutil
 import tempfile
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, Header, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -24,6 +34,8 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 import fitz  # PyMuPDF
 import tiktoken
 import uuid
+
+from src.auth import create_key, validate_key, revoke_key, list_keys
 
 load_dotenv()
 
@@ -34,6 +46,7 @@ VECTOR_SIZE = 1536
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHAT_MODEL = "gpt-4o-mini"
 TOP_K = 5
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "")
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 qdrant_client = QdrantClient(
@@ -45,7 +58,7 @@ encoder = tiktoken.get_encoding("cl100k_base")
 app = FastAPI(
     title="RAG Policy Chatbot API",
     description="Upload PDF policy documents and query them with natural language.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -55,10 +68,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Security schemes (appear in /docs) ---
+tenant_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+admin_key_scheme = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 
-# --- Response models ---
+
+# ---------------------------------------------------------------------------
+# Auth dependencies
+# ---------------------------------------------------------------------------
+
+def require_tenant(x_api_key: str | None = Depends(tenant_key_scheme)) -> dict:
+    """
+    FastAPI dependency: validates X-API-Key and returns the tenant info dict.
+    Raises 401 if missing or invalid.
+    """
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
+    info = validate_key(x_api_key)
+    if info is None:
+        raise HTTPException(status_code=401, detail="Invalid or revoked API key.")
+    return info
+
+
+def require_admin(x_admin_key: str | None = Depends(admin_key_scheme)) -> None:
+    """
+    FastAPI dependency: validates X-Admin-Key against ADMIN_SECRET.
+    Raises 401/403 as appropriate.
+    """
+    if not x_admin_key:
+        raise HTTPException(status_code=401, detail="Missing X-Admin-Key header.")
+    if not ADMIN_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="ADMIN_SECRET is not configured on this server."
+        )
+    if x_admin_key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid admin key.")
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
 class IngestResponse(BaseModel):
     message: str
+    tenant: str
     collection: str
     chunks_stored: int
     filename: str
@@ -73,10 +127,38 @@ class Source(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[Source]
+    tenant: str
     collection: str
 
 
-# --- Ingest helpers (same logic as ingest.py) ---
+class CreateKeyRequest(BaseModel):
+    tenant: str
+    collection: str
+
+
+class CreateKeyResponse(BaseModel):
+    api_key: str
+    tenant: str
+    collection: str
+    message: str
+
+
+class RevokeKeyRequest(BaseModel):
+    api_key: str
+
+
+class KeyInfo(BaseModel):
+    key_hint: str
+    tenant: str
+    collection: str
+    created_at: str
+    active: bool
+
+
+# ---------------------------------------------------------------------------
+# Pipeline helpers
+# ---------------------------------------------------------------------------
+
 def extract_text(pdf_path: str) -> list[dict]:
     doc = fitz.open(pdf_path)
     pages = []
@@ -135,10 +217,12 @@ def store_in_qdrant(chunks: list[dict], collection_name: str):
     qdrant_client.upsert(collection_name=collection_name, points=points)
 
 
-# --- Query helpers (same logic as query.py) ---
 def retrieve_chunks(question_vector: list[float], collection_name: str) -> list[dict]:
     if not qdrant_client.collection_exists(collection_name):
-        raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found. Ingest a PDF first.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection '{collection_name}' not found. Ingest a PDF first."
+        )
     results = qdrant_client.query_points(
         collection_name=collection_name,
         query=question_vector,
@@ -173,7 +257,10 @@ Question: {question}
 Answer:"""
 
 
-# --- Endpoints ---
+# ---------------------------------------------------------------------------
+# Public endpoint
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 def health():
     """Check API and Qdrant connectivity."""
@@ -184,16 +271,25 @@ def health():
         raise HTTPException(status_code=503, detail=f"Qdrant unreachable: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Tenant endpoints (require X-API-Key)
+# ---------------------------------------------------------------------------
+
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(
     file: UploadFile = File(..., description="PDF file to ingest"),
-    collection: str = Form(..., description="Collection name (one per company/tenant)"),
+    tenant_info: dict = Depends(require_tenant),
 ):
-    """Upload a PDF and store its embeddings in Qdrant."""
+    """
+    Upload a PDF and store its embeddings in the tenant's Qdrant collection.
+    The collection is determined by the API key — callers cannot choose it.
+    """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    # Save upload to a temp file
+    collection = tenant_info["collection"]
+    tenant = tenant_info["tenant"]
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
@@ -214,6 +310,7 @@ async def ingest(
 
     return IngestResponse(
         message="PDF ingested successfully.",
+        tenant=tenant,
         collection=collection,
         chunks_stored=len(chunks),
         filename=file.filename,
@@ -223,9 +320,15 @@ async def ingest(
 @app.post("/query", response_model=QueryResponse)
 def query(
     question: str = Form(..., description="The question to ask"),
-    collection: str = Form(..., description="Collection name to search"),
+    tenant_info: dict = Depends(require_tenant),
 ):
-    """Ask a question and get a cited answer from the ingested documents."""
+    """
+    Ask a question and get a cited answer from the tenant's ingested documents.
+    The collection is determined by the API key.
+    """
+    collection = tenant_info["collection"]
+    tenant = tenant_info["tenant"]
+
     question_vector = openai_client.embeddings.create(
         model=EMBEDDING_MODEL, input=question
     ).data[0].embedding
@@ -236,6 +339,7 @@ def query(
         return QueryResponse(
             answer="No relevant content found.",
             sources=[],
+            tenant=tenant,
             collection=collection,
         )
 
@@ -250,5 +354,40 @@ def query(
     return QueryResponse(
         answer=answer,
         sources=[Source(source=c["source"], page=c["page"], score=c["score"]) for c in chunks],
+        tenant=tenant,
         collection=collection,
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin endpoints (require X-Admin-Key)
+# ---------------------------------------------------------------------------
+
+@app.post("/admin/keys", response_model=CreateKeyResponse, dependencies=[Depends(require_admin)])
+def admin_create_key(body: CreateKeyRequest):
+    """
+    Create a new API key scoped to the given tenant name and Qdrant collection.
+    The returned key is shown only once — store it immediately.
+    """
+    api_key = create_key(tenant=body.tenant, collection=body.collection)
+    return CreateKeyResponse(
+        api_key=api_key,
+        tenant=body.tenant,
+        collection=body.collection,
+        message="Store this key securely — it will not be shown again.",
+    )
+
+
+@app.get("/admin/keys", response_model=list[KeyInfo], dependencies=[Depends(require_admin)])
+def admin_list_keys():
+    """List all API keys (key values redacted to last 8 chars)."""
+    return list_keys()
+
+
+@app.post("/admin/keys/revoke", dependencies=[Depends(require_admin)])
+def admin_revoke_key(body: RevokeKeyRequest):
+    """Revoke an API key so it can no longer authenticate."""
+    found = revoke_key(body.api_key)
+    if not found:
+        raise HTTPException(status_code=404, detail="Key not found.")
+    return {"message": "Key revoked successfully."}
