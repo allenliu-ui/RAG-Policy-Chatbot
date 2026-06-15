@@ -24,19 +24,93 @@ require_auth()
 info = st.session_state.tenant_info
 
 # ---------------------------------------------------------------------------
+# Sidebar styles
+# ---------------------------------------------------------------------------
+
+st.markdown("""
+<style>
+/* Brand header block */
+.sidebar-brand {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 8px;
+    color: white;
+}
+.sidebar-brand h2 {
+    margin: 0 0 2px 0;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: white !important;
+}
+.sidebar-brand p {
+    margin: 0;
+    font-size: 0.75rem;
+    opacity: 0.8;
+    color: white !important;
+}
+
+/* Tenant info card */
+.tenant-card {
+    background: #f0f4f8;
+    border-left: 3px solid #2d6a9f;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 8px 0;
+}
+.tenant-card .label {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-bottom: 2px;
+}
+.tenant-card .value {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #1e3a5f;
+}
+
+/* Section label */
+.section-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #9ca3af;
+    font-weight: 600;
+    margin: 16px 0 6px 0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.markdown(f"### 📋 Policy Chatbot")
-    st.caption(f"**{info['tenant']}** · `{info['collection']}`")
-    st.markdown("---")
+    # Brand header
+    st.markdown(f"""
+    <div class="sidebar-brand">
+        <h2>📋 Policy Chatbot</h2>
+        <p>AI-powered policy assistant</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Tenant info card
+    st.markdown(f"""
+    <div class="tenant-card">
+        <div class="label">Tenant</div>
+        <div class="value">{info['tenant']}</div>
+        <div class="label" style="margin-top:6px;">Collection</div>
+        <div class="value" style="font-size:0.78rem;">{info['collection']}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # Document filter
     if st.session_state.documents:
-        st.markdown("**Filter Documents**")
+        st.markdown('<div class="section-label">Filter by document</div>', unsafe_allow_html=True)
         selected = st.multiselect(
-            "Search only in:",
+            "Filter",
             options=st.session_state.documents,
             default=[d for d in st.session_state.filter_sources if d in st.session_state.documents],
             placeholder="All documents",
@@ -44,19 +118,21 @@ with st.sidebar:
         )
         st.session_state.filter_sources = selected
         if selected:
-            st.caption(f"Filtering to {len(selected)} of {len(st.session_state.documents)} doc(s).")
-        st.markdown("---")
+            st.caption(f"Searching {len(selected)} of {len(st.session_state.documents)} doc(s).")
 
+    # Navigation
+    st.markdown('<div class="section-label">Navigation</div>', unsafe_allow_html=True)
+    st.page_link("pages/2_Documents.py", label="📄 Manage Documents", use_container_width=True)
+    st.page_link("pages/3_Admin.py", label="🔧 Admin Dashboard", use_container_width=True)
+
+    # Actions
+    st.markdown('<div class="section-label">Actions</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
-    if col1.button("🗑️ Clear chat", use_container_width=True):
+    if col1.button("🗑️ Clear", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
     if col2.button("🚪 Logout", use_container_width=True):
         logout()
-
-    st.markdown("---")
-    st.page_link("pages/2_Documents.py", label="📄 Manage Documents")
-    st.page_link("pages/3_Admin.py", label="🔧 Admin Dashboard")
 
 # ---------------------------------------------------------------------------
 # Chat area

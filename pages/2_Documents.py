@@ -20,17 +20,53 @@ require_auth()
 
 info = st.session_state.tenant_info
 
+st.markdown("""
+<style>
+.sidebar-brand {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 8px;
+    color: white;
+}
+.sidebar-brand h2 { margin: 0 0 2px 0; font-size: 1.15rem; font-weight: 700; color: white !important; }
+.sidebar-brand p  { margin: 0; font-size: 0.75rem; opacity: 0.8; color: white !important; }
+.tenant-card {
+    background: #f0f4f8;
+    border-left: 3px solid #2d6a9f;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 8px 0;
+}
+.tenant-card .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; margin-bottom: 2px; }
+.tenant-card .value { font-size: 0.85rem; font-weight: 600; color: #1e3a5f; }
+.section-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #9ca3af; font-weight: 600; margin: 16px 0 6px 0; }
+</style>
+""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.markdown("### 📋 Policy Chatbot")
-    st.caption(f"**{info['tenant']}** · `{info['collection']}`")
-    st.markdown("---")
-    st.page_link("pages/1_Chat.py", label="💬 Chat")
-    st.page_link("pages/3_Admin.py", label="🔧 Admin Dashboard")
-    st.markdown("---")
+    st.markdown("""
+    <div class="sidebar-brand">
+        <h2>📋 Policy Chatbot</h2>
+        <p>AI-powered policy assistant</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="tenant-card">
+        <div class="label">Tenant</div>
+        <div class="value">{info['tenant']}</div>
+        <div class="label" style="margin-top:6px;">Collection</div>
+        <div class="value" style="font-size:0.78rem;">{info['collection']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Navigation</div>', unsafe_allow_html=True)
+    st.page_link("pages/1_Chat.py", label="💬 Chat", use_container_width=True)
+    st.page_link("pages/3_Admin.py", label="🔧 Admin Dashboard", use_container_width=True)
+    st.markdown('<div class="section-label">Actions</div>', unsafe_allow_html=True)
     if st.button("🚪 Logout", use_container_width=True):
         logout()
 
